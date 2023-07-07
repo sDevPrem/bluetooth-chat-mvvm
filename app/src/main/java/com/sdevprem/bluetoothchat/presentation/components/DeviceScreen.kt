@@ -22,7 +22,9 @@ import com.sdevprem.bluetoothchat.presentation.BTUiState
 fun DeviceScreen(
     state: BTUiState,
     onStartScan: () -> Unit,
-    onStopScan: () -> Unit
+    onStopScan: () -> Unit,
+    onDeviceClick: (BTDevice) -> Unit,
+    onStartServer: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxSize()
@@ -33,7 +35,7 @@ fun DeviceScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            onDeviceClick = {}
+            onDeviceClick = onDeviceClick
         )
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -44,6 +46,9 @@ fun DeviceScreen(
             }
             Button(onClick = onStopScan) {
                 Text(text = "Stop scan")
+            }
+            Button(onClick = onStartServer) {
+                Text(text = "Start server")
             }
         }
     }

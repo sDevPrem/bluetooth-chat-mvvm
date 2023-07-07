@@ -4,22 +4,37 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothServerSocket
+import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import com.sdevprem.bluetoothchat.domain.chat.BTController
 import com.sdevprem.bluetoothchat.domain.chat.BTDevice
+import com.sdevprem.bluetoothchat.domain.chat.ConnectionResult
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import java.io.IOException
+import java.util.UUID
 import javax.inject.Inject
 
 @SuppressLint("MissingPermission")
 class AndroidBTController @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
 ) : BTController {
 
     private val btManager by lazy {
@@ -29,6 +44,10 @@ class AndroidBTController @Inject constructor(
         btManager?.adapter
     }
 
+    private val _isConnected = MutableStateFlow(false)
+    override val isConnected: StateFlow<Boolean>
+        get() = _isConnected.asStateFlow()
+
     private val _scannedDevices = MutableStateFlow<List<BTDevice>>(emptyList())
     override val scannedDevices: StateFlow<List<BTDevice>>
         get() = _scannedDevices.asStateFlow()
@@ -36,6 +55,10 @@ class AndroidBTController @Inject constructor(
     private val _pairedDevices = MutableStateFlow<List<BTDevice>>(emptyList())
     override val pairedDevices: StateFlow<List<BTDevice>>
         get() = _pairedDevices.asStateFlow()
+
+    private val _errors = MutableSharedFlow<String>()
+    override val errors: SharedFlow<String>
+        get() = _errors.asSharedFlow()
 
     private val deviceFoundReceiver = DeviceFoundReceiver { device ->
         val newDevice = device.toBTDevice()
@@ -46,8 +69,29 @@ class AndroidBTController @Inject constructor(
         }
     }
 
+    private val btStateReceiver = BTStateReceiver { isConnected, btDevice ->
+        if (btAdapter?.bondedDevices?.contains(btDevice) == true) {
+            _isConnected.update { isConnected }
+        } else {
+            CoroutineScope(Dispatchers.IO).launch {
+                _errors.emit("Can't connect to a non-paired device")
+            }
+        }
+    }
+
+    private var currentServerSocket: BluetoothServerSocket? = null
+    private var currentClientSocket: BluetoothSocket? = null
+
     init {
         updatePairedDevices()
+        context.registerReceiver(
+            btStateReceiver,
+            IntentFilter().apply {
+                addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+                addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+                addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+            }
+        )
     }
 
     /*TODO : Register a broadcast receiver for ACTION_DISCOVERY_STARTED
@@ -71,9 +115,74 @@ class AndroidBTController @Inject constructor(
             btAdapter?.cancelDiscovery()
     }
 
+    override fun startBTServer(): Flow<ConnectionResult> = flow {
+        if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT))
+            throw SecurityException("NO BLUETOOTH CONNECT permission granted")
+
+        currentServerSocket = btAdapter?.listenUsingRfcommWithServiceRecord(
+            "chat_service",
+            UUID.fromString(SERVICE_UUID)
+        )
+        var shouldLoop = true
+        while (shouldLoop) {
+            currentClientSocket = try {
+                currentServerSocket?.accept()
+            } catch (e: IOException) {
+                shouldLoop = false
+                null
+            }
+            emit(ConnectionResult.ConnectionEstablished)
+            currentClientSocket?.let {
+                currentServerSocket?.close()
+            }
+        }
+    }.onCompletion {
+        closeConnection()
+    }.flowOn(Dispatchers.IO)
+
+    override fun connectToDevice(device: BTDevice): Flow<ConnectionResult> = flow {
+        if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT))
+            throw SecurityException("NO BLUETOOTH CONNECT permission granted")
+
+        val bluetoothDevice = btAdapter?.getRemoteDevice(device.address)
+
+        currentClientSocket = btAdapter?.getRemoteDevice(device.address)
+            ?.createRfcommSocketToServiceRecord(UUID.fromString(SERVICE_UUID))
+        stopDiscovery()
+
+        if (btAdapter?.bondedDevices?.contains(bluetoothDevice) == false) {
+
+        }
+
+        currentClientSocket?.let {
+            try {
+                it.connect()
+                emit(ConnectionResult.ConnectionEstablished)
+
+                /*TODO: Handle connection*/
+
+            } catch (e: IOException) {
+                it.close()
+                currentServerSocket = null
+                emit(ConnectionResult.ConnectionError("Connection was interrupted"))
+            }
+        }
+    }.onCompletion {
+        closeConnection()
+    }.flowOn(Dispatchers.IO)
+
+    override fun closeConnection() {
+        currentServerSocket?.close()
+        currentClientSocket?.close()
+        currentServerSocket = null
+        currentClientSocket = null
+    }
+
     override fun release() {
         context.unregisterReceiver(deviceFoundReceiver)
+        context.unregisterReceiver(btStateReceiver)
         stopDiscovery()
+        closeConnection()
     }
 
     private fun updatePairedDevices() {
@@ -89,5 +198,9 @@ class AndroidBTController @Inject constructor(
             true
         else
             context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+
+    companion object {
+        const val SERVICE_UUID = "835066b9-8d8f-4709-b336-ccce01116625"
+    }
 
 }
