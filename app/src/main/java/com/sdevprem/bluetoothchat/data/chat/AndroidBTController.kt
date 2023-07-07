@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import com.sdevprem.bluetoothchat.domain.chat.BTController
 import com.sdevprem.bluetoothchat.domain.chat.BTDevice
+import com.sdevprem.bluetoothchat.domain.chat.BTMsg
 import com.sdevprem.bluetoothchat.domain.chat.ConnectionResult
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -23,8 +24,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -82,6 +85,8 @@ class AndroidBTController @Inject constructor(
     private var currentServerSocket: BluetoothServerSocket? = null
     private var currentClientSocket: BluetoothSocket? = null
 
+    private var dataTransferService: BTDataTransferService? = null
+
     init {
         updatePairedDevices()
         context.registerReceiver(
@@ -134,6 +139,15 @@ class AndroidBTController @Inject constructor(
             emit(ConnectionResult.ConnectionEstablished)
             currentClientSocket?.let {
                 currentServerSocket?.close()
+                val service = BTDataTransferService(it)
+                dataTransferService = service
+                emitAll(
+                    service
+                        .listenForIncomingMessage()
+                        .map { msg ->
+                            ConnectionResult.TransferSucceeded(msg)
+                        }
+                )
             }
         }
     }.onCompletion {
@@ -146,23 +160,28 @@ class AndroidBTController @Inject constructor(
 
         val bluetoothDevice = btAdapter?.getRemoteDevice(device.address)
 
-        currentClientSocket = btAdapter?.getRemoteDevice(device.address)
+        currentClientSocket = btAdapter
+            ?.getRemoteDevice(device.address)
             ?.createRfcommSocketToServiceRecord(UUID.fromString(SERVICE_UUID))
+
         stopDiscovery()
 
-        if (btAdapter?.bondedDevices?.contains(bluetoothDevice) == false) {
-
-        }
-
-        currentClientSocket?.let {
+        currentClientSocket?.let { socket ->
             try {
-                it.connect()
+                socket.connect()
                 emit(ConnectionResult.ConnectionEstablished)
 
-                /*TODO: Handle connection*/
-
+                BTDataTransferService(socket = socket).also {
+                    dataTransferService = it
+                    emitAll(
+                        it.listenForIncomingMessage()
+                            .map { msg ->
+                                ConnectionResult.TransferSucceeded(msg)
+                            }
+                    )
+                }
             } catch (e: IOException) {
-                it.close()
+                socket.close()
                 currentServerSocket = null
                 emit(ConnectionResult.ConnectionError("Connection was interrupted"))
             }
@@ -170,6 +189,20 @@ class AndroidBTController @Inject constructor(
     }.onCompletion {
         closeConnection()
     }.flowOn(Dispatchers.IO)
+
+    override suspend fun trySendMsg(msg: String): BTMsg? {
+        if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT) || dataTransferService == null)
+            return null
+
+        val btMsg = BTMsg(
+            msg = msg,
+            senderName = btAdapter?.name ?: "Unknown name",
+            isFromLocalUser = true
+        )
+
+        dataTransferService?.sendMsg(btMsg.toByteArray())
+        return btMsg
+    }
 
     override fun closeConnection() {
         currentServerSocket?.close()
@@ -179,8 +212,11 @@ class AndroidBTController @Inject constructor(
     }
 
     override fun release() {
-        context.unregisterReceiver(deviceFoundReceiver)
-        context.unregisterReceiver(btStateReceiver)
+        try {
+            context.unregisterReceiver(deviceFoundReceiver)
+            context.unregisterReceiver(btStateReceiver)
+        } catch (_: IllegalArgumentException) {
+        }
         stopDiscovery()
         closeConnection()
     }

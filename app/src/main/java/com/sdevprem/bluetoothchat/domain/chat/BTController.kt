@@ -19,4 +19,6 @@ interface BTController {
     fun closeConnection()
 
     fun release()
+
+    suspend fun trySendMsg(msg: String): BTMsg?
 }
