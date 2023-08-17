@@ -6,9 +6,9 @@ Architecture for the flow of data.
 
 ## Screenshots
 
-|                                       |                                               |
-|---------------------------------------|-----------------------------------------------|
-| ![home screen](image/home_screen.jpg) | ![chatting screen](image/chatting_screen.jpg) |
+|                                                                                                                       |                                                                                                                           |
+|-----------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------|
+| ![home_screen](https://github.com/sDevPrem/bluetooth-chat-mvvm/assets/130966261/952a6416-5f9b-4b0b-85c5-5124d5e09a60) | ![chatting_screen](https://github.com/sDevPrem/bluetooth-chat-mvvm/assets/130966261/f69605b8-bede-49bc-9147-660e7b0178f5) |
 
 ## Features
 
